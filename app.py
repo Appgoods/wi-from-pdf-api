@@ -14,18 +14,16 @@ from docx.shared import Inches
 
 TMP_DIR = Path("/tmp")
 
-# עוגנים (Anchors) לחיתוך תמונות לפי שלבים – מבוסס על הטקסט שמופיע בשרטוט שלך [1](blob:https://www.microsoft365.com/42cb9126-67ba-478b-9073-3445f54b20dc)
 STEP_ANCHORS = [
-    ("שלב 1 – מיקום Kapton (View A)", "Fix the kapton in this position before assembly"),
-    ("שלב 2 – לפני הרכבה: מילוי ג’ל מוליכות XTS-8030", "Before assembly: Fill volume"),
-    ("שלב 3 – פתח מילוי (Opening for filling)", "Openning for filling"),
-    ("שלב 4 – אחרי הרכבת MINID: מילוי ג’ל בין הלוחות לכיסוי תחתון", "After that MINID will be assembled"),
-    ("שלב 5 – אזור תווית עליונה", "Area for label"),
+    ("Step 1 - Kapton position (View A)", "Fix the kapton in this position before assembly"),
+    ("Step 2 - Before assembly: fill gel XTS-8030", "Before assembly: Fill volume"),
+    ("Step 3 - Filling opening", "Openning for filling"),
+    ("Step 4 - After assembly: fill gel XTS-8030", "After that MINID will be assembled"),
+    ("Step 5 - Upper label area", "Area for label"),
 ]
 
 app = FastAPI(title="WI from PDF API (Step Images + BOM)")
 
-# CORS פתוח ל-POC (אחר כך אפשר להדק לכתובת Netlify שלך)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,19 +38,10 @@ def health():
 
 @app.get("/")
 def index():
-    return {
-        "service": "wi-from-pdf-api",
-        "endpoints": ["/api/health", "/api/process-pdf", "/api/download/{filename}"]
-    }
+    return {"service": "wi-from-pdf-api", "endpoints": ["/api/health", "/api/process-pdf", "/api/download/{filename}"]}
 
-# -----------------------------
-# 1) חילוץ BOM בסיסי מתוך טקסט ה-PDF
-# -----------------------------
+
 def extract_bom_rows_from_pdf(pdf_path: Path) -> List[Tuple[str, str, str, str]]:
-    """
-    מחלץ טבלת BOM בפורמט: (item, qty, part_number, description)
-    לפי כותרת 'ITEM QTY PART NUMBER DESCRIPTION' שמופיעה בשרטוט. [1](blob:https://www.microsoft365.com/42cb9126-67ba-478b-9073-3445f54b20dc)
-    """
     text_all: List[str] = []
     with pdfplumber.open(str(pdf_path)) as pdf:
         for p in pdf.pages:
@@ -77,30 +66,26 @@ def extract_bom_rows_from_pdf(pdf_path: Path) -> List[Tuple[str, str, str, str]]
         if mm:
             item, qty, part, desc = mm.groups()
             bom.append((item, qty, part, desc))
-
     return bom
 
-# -----------------------------
-# 2) חיתוך תמונות לפי עוגני טקסט מהעמוד הראשון
-# -----------------------------
+
 def clip_from_anchor(page: fitz.Page, anchor_text: str,
                      clip_above: int = 220, clip_below: int = 80,
                      left_pad: int = 40, right_pad: int = 300):
     rects = page.search_for(anchor_text)
     if not rects:
         return None
-
     r = rects[0]
     for rr in rects[1:]:
         r |= rr
 
-    clip = fitz.Rect(
+    return fitz.Rect(
         max(0, r.x0 - left_pad),
         max(0, r.y0 - clip_above),
         min(page.rect.width, r.x1 + right_pad),
         min(page.rect.height, r.y1 + clip_below),
     )
-    return clip
+
 
 def render_clip_to_png(pdf_path: Path, page_num: int, clip: fitz.Rect, out_path: Path, zoom: int = 2):
     doc = fitz.open(str(pdf_path))
@@ -111,20 +96,17 @@ def render_clip_to_png(pdf_path: Path, page_num: int, clip: fitz.Rect, out_path:
     doc.close()
     return out_path
 
-# -----------------------------
-# 3) בניית DOCX: BOM + תמונות לפי שלבים + צעדים תמציתיים
-# -----------------------------
+
 def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path):
     doc = Document()
-    doc.add_heading("הנחיות עבודה – MiNID (טיוטה)", 0)
+    doc.add_heading("Work Instructions - Draft", 0)
 
-    doc.add_heading("בטיחות", level=1)
-    doc.add_paragraph("• PPE לפי הנהלים")
-    doc.add_paragraph("• הגנת ESD")
-    doc.add_paragraph("• נתק חשמל לפני עבודה מכנית")
+    doc.add_heading("Safety", level=1)
+    doc.add_paragraph("• PPE per procedures")
+    doc.add_paragraph("• ESD protection")
+    doc.add_paragraph("• Disconnect power before mechanical work")
 
-    # BOM
-    doc.add_heading("רשימת חלקים (BOM) – מתוך השרטוט", level=1)
+    doc.add_heading("BOM (from drawing)", level=1)
     if bom_rows:
         table = doc.add_table(rows=1, cols=4)
         hdr = table.rows[0].cells
@@ -139,10 +121,9 @@ def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path):
             row[2].text = str(part)
             row[3].text = str(desc)
     else:
-        doc.add_paragraph("לא נמצאה טבלת BOM לחילוץ אוטומטי.")
+        doc.add_paragraph("BOM table not found.")
 
-    # תמונות לפי שלבים
-    doc.add_heading("תהליך הרכבה – תמונות לפי שלבים (מתוך השרטוט)", level=1)
+    doc.add_heading("Assembly process - step images", level=1)
 
     pdf = fitz.open(str(pdf_path))
     page = pdf.load_page(0)
@@ -154,7 +135,6 @@ def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path):
             continue
         img_path = TMP_DIR / f"step_{idx}.png"
         render_clip_to_png(pdf_path, 0, clip, img_path, zoom=2)
-
         doc.add_heading(title, level=2)
         doc.add_picture(str(img_path), width=Inches(6.5))
         rendered_any = True
@@ -162,18 +142,15 @@ def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path):
     pdf.close()
 
     if not rendered_any:
-        doc.add_paragraph("לא נמצאו עוגני טקסט לחיתוך תמונות. בדוק שה‑PDF כולל את טקסט העוגן (לא סרוק).")
+        doc.add_paragraph("No anchors found to crop images. PDF may be scanned (no selectable text).")
 
-    # צעדים תמציתיים תואמים לכותרות (אפשר לשפר בהמשך)
-    doc.add_heading("צעדי עבודה (תמצית)", level=1)
+    doc.add_heading("Steps (summary)", level=1)
     for i, (title, _) in enumerate(STEP_ANCHORS, 1):
         doc.add_paragraph(f"{i}. {title}")
 
     doc.save(str(out_docx))
 
-# -----------------------------
-# API endpoints
-# -----------------------------
+
 @app.post("/api/process-pdf")
 async def process_pdf(
     request: Request,
@@ -181,16 +158,14 @@ async def process_pdf(
     detail_level: str = Form("2"),
 ):
     if file.content_type not in ("application/pdf", "application/octet-stream"):
-        raise HTTPException(status_code=400, detail="נא להעלות קובץ PDF")
+        raise HTTPException(status_code=400, detail="Please upload a PDF file")
 
     pdf_bytes = await file.read()
     pdf_path = TMP_DIR / f"pdf-{uuid.uuid4().hex}.pdf"
     pdf_path.write_bytes(pdf_bytes)
 
-    # חילוץ BOM
     bom_rows = extract_bom_rows_from_pdf(pdf_path)
 
-    # יצירת DOCX עם תמונות לפי שלבים
     docx_name = f"wi-{uuid.uuid4().hex}.docx"
     docx_path = TMP_DIR / docx_name
     build_docx_with_step_images(pdf_path, bom_rows, docx_path)
@@ -203,11 +178,12 @@ async def process_pdf(
         "docx_url": docx_url
     })
 
+
 @app.get("/api/download/{filename}")
 def download_file(filename: str):
     path = TMP_DIR / filename
     if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="הקובץ לא נמצא (ייתכן שפג תוקפו).")
+        raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(
         path=str(path),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
