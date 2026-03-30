@@ -1,14 +1,14 @@
 import uuid
 import re
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 
 import pdfplumber
-import fitz  # PyMuPDF
+import fitz  # pymupdf
 from docx import Document
 from docx.shared import Inches
 
@@ -26,19 +26,24 @@ app = FastAPI(title="WI from PDF API (Step Images + BOM)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # later you can restrict to your Netlify domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/")
 def index():
-    return {"service": "wi-from-pdf-api", "endpoints": ["/api/health", "/api/process-pdf", "/api/download/{filename}"]}
+    return {
+        "service": "wi-from-pdf-api",
+        "endpoints": ["/api/health", "/api/process-pdf", "/api/download/{filename}"],
+    }
 
 
 def extract_bom_rows_from_pdf(pdf_path: Path) -> List[Tuple[str, str, str, str]]:
@@ -52,7 +57,7 @@ def extract_bom_rows_from_pdf(pdf_path: Path) -> List[Tuple[str, str, str, str]]
     m = re.search(
         r"ITEM\s+QTY\.?\s+PART\s+NUMBER\s+DESCRIPTION(.*?)(?:Table\s+1|SIGNED\s+DATE|UNLESS\s+OTHERWISE|$)",
         text,
-        flags=re.S | re.I
+        flags=re.S | re.I,
     )
     if not m:
         return bom
@@ -66,15 +71,22 @@ def extract_bom_rows_from_pdf(pdf_path: Path) -> List[Tuple[str, str, str, str]]
         if mm:
             item, qty, part, desc = mm.groups()
             bom.append((item, qty, part, desc))
+
     return bom
 
 
-def clip_from_anchor(page: fitz.Page, anchor_text: str,
-                     clip_above: int = 220, clip_below: int = 80,
-                     left_pad: int = 40, right_pad: int = 300):
+def clip_from_anchor(
+    page: fitz.Page,
+    anchor_text: str,
+    clip_above: int = 220,
+    clip_below: int = 80,
+    left_pad: int = 40,
+    right_pad: int = 300,
+) -> Optional[fitz.Rect]:
     rects = page.search_for(anchor_text)
     if not rects:
         return None
+
     r = rects[0]
     for rr in rects[1:]:
         r |= rr
@@ -87,7 +99,13 @@ def clip_from_anchor(page: fitz.Page, anchor_text: str,
     )
 
 
-def render_clip_to_png(pdf_path: Path, page_num: int, clip: fitz.Rect, out_path: Path, zoom: int = 2):
+def render_clip_to_png(
+    pdf_path: Path,
+    page_num: int,
+    clip: fitz.Rect,
+    out_path: Path,
+    zoom: int = 2,
+) -> Path:
     doc = fitz.open(str(pdf_path))
     page = doc.load_page(page_num)
     mat = fitz.Matrix(zoom, zoom)
@@ -97,7 +115,7 @@ def render_clip_to_png(pdf_path: Path, page_num: int, clip: fitz.Rect, out_path:
     return out_path
 
 
-def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path):
+def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path) -> None:
     doc = Document()
     doc.add_heading("Work Instructions - Draft", 0)
 
@@ -173,10 +191,12 @@ async def process_pdf(
     base_url = str(request.base_url).rstrip("/")
     docx_url = f"{base_url}/api/download/{docx_name}"
 
-    return JSONResponse({
-        "received": {"filename": file.filename, "bytes": len(pdf_bytes), "detail_level": detail_level},
-        "docx_url": docx_url
-    })
+    return JSONResponse(
+        {
+            "received": {"filename": file.filename, "bytes": len(pdf_bytes), "detail_level": detail_level},
+            "docx_url": docx_url,
+        }
+    )
 
 
 @app.get("/api/download/{filename}")
@@ -187,6 +207,6 @@ def download_file(filename: str):
     return FileResponse(
         path=str(path),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename
+        filename=filename,
     )
 ``
