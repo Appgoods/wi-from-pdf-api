@@ -1,23 +1,34 @@
 import uuid
+import re
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 
 import pdfplumber
+import fitz  # PyMuPDF
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Inches
 
-TMP_DIR = Path("/tmp")  # דיסק זמני שמתאים ל-POC על Render
+TMP_DIR = Path("/tmp")
 
-app = FastAPI(title="WI from PDF API")
+# עוגנים (Anchors) לחיתוך תמונות לפי שלבים – מבוסס על הטקסט שמופיע בשרטוט שלך [1](blob:https://www.microsoft365.com/42cb9126-67ba-478b-9073-3445f54b20dc)
+STEP_ANCHORS = [
+    ("שלב 1 – מיקום Kapton (View A)", "Fix the kapton in this position before assembly"),
+    ("שלב 2 – לפני הרכבה: מילוי ג’ל מוליכות XTS-8030", "Before assembly: Fill volume"),
+    ("שלב 3 – פתח מילוי (Opening for filling)", "Openning for filling"),
+    ("שלב 4 – אחרי הרכבת MINID: מילוי ג’ל בין הלוחות לכיסוי תחתון", "After that MINID will be assembled"),
+    ("שלב 5 – אזור תווית עליונה", "Area for label"),
+]
 
-# CORS פתוח ל-POC (אפשר להדק לכתובת Netlify שלך לאחר הבדיקה)
+app = FastAPI(title="WI from PDF API (Step Images + BOM)")
+
+# CORS פתוח ל-POC (אחר כך אפשר להדק לכתובת Netlify שלך)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # לדוגמה: ["https://wi-from-pdf.netlify.app"]
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,97 +38,89 @@ app.add_middleware(
 def health():
     return {"status": "ok"}
 
-def extract_text_from_pdf(pdf_path: Path) -> str:
-    """חילוץ טקסט בסיסי מכל העמודים. אם המסמך סרוק—נוסיף OCR בהמשך."""
-    texts: List[str] = []
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        for page in pdf.pages:
-            txt = page.extract_text() or ""
-            if txt.strip():
-                texts.append(txt.strip())
-    return "\n\n".join(texts).strip()
-
-def build_docx_from_text(text: str, out_path: Path, title: str = "הנחיות עבודה – טיוטה"):
-    """בניית DOCX פשוט עם מבנה קבוע על בסיס הטקסט שחולץ."""
-    doc = Document()
-
-    # כותרת
-    doc.add_heading(title, level=0)
-
-    # בטיחות (Placeholder)
-    doc.add_heading("בטיחות", level=1)
-    doc.add_paragraph("• PPE לפי הנהלים\n• הגנת ESD\n• נתק חשמל לפני עבודה מכנית")
-
-    # צעדים (נאיבי: שורות ארוכות → צעדים)
-    doc.add_heading("צעדי עבודה (טיוטה)", level=1)
-    steps = []
-    for line in text.splitlines():
-        line = line.strip()
-        if len(line) > 20 and any(c.isalpha() for c in line):
-            steps.append(line)
-            if len(steps) >= 12:
-                break
-    if steps:
-        for i, st in enumerate(steps, 1):
-            p = doc.add_paragraph()
-            run = p.add_run(f"{i}. {st}")
-            run.font.size = Pt(11)
-    else:
-        doc.add_paragraph("— לא נמצאו צעדים מפורשים בטקסט —")
-
-    # סיכום
-    doc.add_heading("סיכום", level=1)
-    doc.add_paragraph("DOCX זה נוצר אוטומטית מקובץ ה‑PDF לצורך POC. נרחיב לחילוץ חכם בהמשך (BOM/מומנטים/מודולים).")
-
-    doc.save(str(out_path))
-
-@app.post("/api/process-pdf")
-async def process_pdf(
-    request: Request,
-    file: UploadFile = File(...),
-    detail_level: str = Form("2"),
-):
-    # בדיקת סוג קובץ ושמירה זמנית
-    if file.content_type not in ("application/pdf", "application/octet-stream"):
-        raise HTTPException(status_code=400, detail="נא להעלות קובץ PDF")
-
-    pdf_path = TMP_DIR / f"pdf-{uuid.uuid4().hex}.pdf"
-    pdf_bytes = await file.read()
-    pdf_path.write_bytes(pdf_bytes)
-
-    # חילוץ טקסט; אם ריק (סרוק) נציין זאת—OCR נוסיף בהמשך
-    try:
-        text = extract_text_from_pdf(pdf_path)
-    except Exception:
-        text = ""
-
-    # יצירת DOCX אמיתי
-    docx_name = f"wi-{uuid.uuid4().hex}.docx"
-    docx_path = TMP_DIR / docx_name
-    build_docx_from_text(text or "אין טקסט קריא (כנראה מסמך סרוק). נוסיף OCR בשלב הבא.", docx_path)
-
-    # החזרת קישור להורדה מתוך השרת
-    base_url = str(request.base_url).rstrip("/")   # https://...onrender.com
-    docx_url = f"{base_url}/api/download/{docx_name}"
-
-    return JSONResponse({
-        "received": {"filename": file.filename, "bytes": len(pdf_bytes), "detail_level": detail_level},
-        "docx_url": docx_url
-    })
-
-@app.get("/api/download/{filename}")
-def download_docx(filename: str):
-    path = TMP_DIR / filename
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="הקובץ לא נמצא (ייתכן שפג תוקפו).")
-    return FileResponse(
-        path=str(path),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename
-    )
-
-# (לא חובה) דף בית ידידותי במקום 404 בשורש
 @app.get("/")
 def index():
-    return {"service": "wi-from-pdf-api",
-            "endpoints": ["/api/health", "/api/process-pdf", "/api/download/{filename}"]}
+    return {
+        "service": "wi-from-pdf-api",
+        "endpoints": ["/api/health", "/api/process-pdf", "/api/download/{filename}"]
+    }
+
+# -----------------------------
+# 1) חילוץ BOM בסיסי מתוך טקסט ה-PDF
+# -----------------------------
+def extract_bom_rows_from_pdf(pdf_path: Path) -> List[Tuple[str, str, str, str]]:
+    """
+    מחלץ טבלת BOM בפורמט: (item, qty, part_number, description)
+    לפי כותרת 'ITEM QTY PART NUMBER DESCRIPTION' שמופיעה בשרטוט. [1](blob:https://www.microsoft365.com/42cb9126-67ba-478b-9073-3445f54b20dc)
+    """
+    text_all: List[str] = []
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for p in pdf.pages:
+            text_all.append(p.extract_text() or "")
+    text = "\n".join(text_all)
+
+    bom: List[Tuple[str, str, str, str]] = []
+    m = re.search(
+        r"ITEM\s+QTY\.?\s+PART\s+NUMBER\s+DESCRIPTION(.*?)(?:Table\s+1|SIGNED\s+DATE|UNLESS\s+OTHERWISE|$)",
+        text,
+        flags=re.S | re.I
+    )
+    if not m:
+        return bom
+
+    block = m.group(1)
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in block.splitlines()]
+    for ln in lines:
+        if not ln:
+            continue
+        mm = re.match(r"^(\d+)\s+(\d+)\s+([0-9A-Za-z.\-_]+)\s+(.*)$", ln)
+        if mm:
+            item, qty, part, desc = mm.groups()
+            bom.append((item, qty, part, desc))
+
+    return bom
+
+# -----------------------------
+# 2) חיתוך תמונות לפי עוגני טקסט מהעמוד הראשון
+# -----------------------------
+def clip_from_anchor(page: fitz.Page, anchor_text: str,
+                     clip_above: int = 220, clip_below: int = 80,
+                     left_pad: int = 40, right_pad: int = 300):
+    rects = page.search_for(anchor_text)
+    if not rects:
+        return None
+
+    r = rects[0]
+    for rr in rects[1:]:
+        r |= rr
+
+    clip = fitz.Rect(
+        max(0, r.x0 - left_pad),
+        max(0, r.y0 - clip_above),
+        min(page.rect.width, r.x1 + right_pad),
+        min(page.rect.height, r.y1 + clip_below),
+    )
+    return clip
+
+def render_clip_to_png(pdf_path: Path, page_num: int, clip: fitz.Rect, out_path: Path, zoom: int = 2):
+    doc = fitz.open(str(pdf_path))
+    page = doc.load_page(page_num)
+    mat = fitz.Matrix(zoom, zoom)
+    pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+    pix.save(str(out_path))
+    doc.close()
+    return out_path
+
+# -----------------------------
+# 3) בניית DOCX: BOM + תמונות לפי שלבים + צעדים תמציתיים
+# -----------------------------
+def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path):
+    doc = Document()
+    doc.add_heading("הנחיות עבודה – MiNID (טיוטה)", 0)
+
+    doc.add_heading("בטיחות", level=1)
+    doc.add_paragraph("• PPE לפי הנהלים")
+    doc.add_paragraph("• הגנת ESD")
+    doc.add_paragraph("• נתק חשמל לפני עבודה מכנית")
+
+    # BOM
