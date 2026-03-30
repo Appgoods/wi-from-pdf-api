@@ -3,3 +3,5 @@ uvicorn
 python-multipart
 pdfplumber
 python-docx
+pymupdf
+``
