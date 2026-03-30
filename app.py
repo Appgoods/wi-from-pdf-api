@@ -124,3 +124,93 @@ def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path):
     doc.add_paragraph("• נתק חשמל לפני עבודה מכנית")
 
     # BOM
+    doc.add_heading("רשימת חלקים (BOM) – מתוך השרטוט", level=1)
+    if bom_rows:
+        table = doc.add_table(rows=1, cols=4)
+        hdr = table.rows[0].cells
+        hdr[0].text = "Item"
+        hdr[1].text = "Qty"
+        hdr[2].text = "Part Number"
+        hdr[3].text = "Description"
+        for item, qty, part, desc in bom_rows:
+            row = table.add_row().cells
+            row[0].text = str(item)
+            row[1].text = str(qty)
+            row[2].text = str(part)
+            row[3].text = str(desc)
+    else:
+        doc.add_paragraph("לא נמצאה טבלת BOM לחילוץ אוטומטי.")
+
+    # תמונות לפי שלבים
+    doc.add_heading("תהליך הרכבה – תמונות לפי שלבים (מתוך השרטוט)", level=1)
+
+    pdf = fitz.open(str(pdf_path))
+    page = pdf.load_page(0)
+
+    rendered_any = False
+    for idx, (title, anchor) in enumerate(STEP_ANCHORS, 1):
+        clip = clip_from_anchor(page, anchor)
+        if clip is None:
+            continue
+        img_path = TMP_DIR / f"step_{idx}.png"
+        render_clip_to_png(pdf_path, 0, clip, img_path, zoom=2)
+
+        doc.add_heading(title, level=2)
+        doc.add_picture(str(img_path), width=Inches(6.5))
+        rendered_any = True
+
+    pdf.close()
+
+    if not rendered_any:
+        doc.add_paragraph("לא נמצאו עוגני טקסט לחיתוך תמונות. בדוק שה‑PDF כולל את טקסט העוגן (לא סרוק).")
+
+    # צעדים תמציתיים תואמים לכותרות (אפשר לשפר בהמשך)
+    doc.add_heading("צעדי עבודה (תמצית)", level=1)
+    for i, (title, _) in enumerate(STEP_ANCHORS, 1):
+        doc.add_paragraph(f"{i}. {title}")
+
+    doc.save(str(out_docx))
+
+# -----------------------------
+# API endpoints
+# -----------------------------
+@app.post("/api/process-pdf")
+async def process_pdf(
+    request: Request,
+    file: UploadFile = File(...),
+    detail_level: str = Form("2"),
+):
+    if file.content_type not in ("application/pdf", "application/octet-stream"):
+        raise HTTPException(status_code=400, detail="נא להעלות קובץ PDF")
+
+    pdf_bytes = await file.read()
+    pdf_path = TMP_DIR / f"pdf-{uuid.uuid4().hex}.pdf"
+    pdf_path.write_bytes(pdf_bytes)
+
+    # חילוץ BOM
+    bom_rows = extract_bom_rows_from_pdf(pdf_path)
+
+    # יצירת DOCX עם תמונות לפי שלבים
+    docx_name = f"wi-{uuid.uuid4().hex}.docx"
+    docx_path = TMP_DIR / docx_name
+    build_docx_with_step_images(pdf_path, bom_rows, docx_path)
+
+    base_url = str(request.base_url).rstrip("/")
+    docx_url = f"{base_url}/api/download/{docx_name}"
+
+    return JSONResponse({
+        "received": {"filename": file.filename, "bytes": len(pdf_bytes), "detail_level": detail_level},
+        "docx_url": docx_url
+    })
+
+@app.get("/api/download/{filename}")
+def download_file(filename: str):
+    path = TMP_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="הקובץ לא נמצא (ייתכן שפג תוקפו).")
+    return FileResponse(
+        path=str(path),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename
+    )
+``
