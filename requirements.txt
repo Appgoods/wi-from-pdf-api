@@ -4,4 +4,3 @@ python-multipart
 pdfplumber
 python-docx
 pymupdf
-``
