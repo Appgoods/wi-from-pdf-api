@@ -167,15 +167,16 @@ def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path) -> Non
     page = pdf.load_page(0)
 
     rendered_any = False
-    for idx, (title, anchor) in enumerate(STEP_ANCHORS, 1):
-        clip = clip_from_anchor(page, anchor)
-        if clip is None:
-            continue
-        img_path = TMP_DIR / f"step_{idx}.png"
-        render_clip_to_png(pdf_path, 0, clip, img_path, zoom=2)
-        doc.add_heading(title, level=2)
-        doc.add_picture(str(img_path), width=Inches(6.5))
-        rendered_any = True
+   for idx, (title, anchor, params) in enumerate(STEP_ANCHORS, 1):
+    clip = clip_from_anchor(page, anchor, **params)
+    if clip is None:
+        continue
+
+    img_path = TMP_DIR / f"step_{idx}.png"
+    render_clip_to_png(pdf_path, 0, clip, img_path, zoom=2)
+
+    doc.add_heading(title, level=2)
+    doc.add_picture(str(img_path), width=Inches(6.5))
 
     pdf.close()
 
