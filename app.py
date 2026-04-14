@@ -1,19 +1,20 @@
 import uuid
 import re
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 
 import pdfplumber
-import fitz  # pymupdf
+import fitz  # PyMuPDF
 from docx import Document
 from docx.shared import Inches
 
 TMP_DIR = Path("/tmp")
 
+# Per-step anchors with per-step crop params (most effective improvement)
 STEP_ANCHORS = [
     (
         "Step 1 - Kapton position (View A)",
@@ -46,7 +47,7 @@ app = FastAPI(title="WI from PDF API (Step Images + BOM)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later you can restrict to your Netlify domain
+    allow_origins=["*"],  # later restrict to your Netlify domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -67,6 +68,9 @@ def index():
 
 
 def extract_bom_rows_from_pdf(pdf_path: Path) -> List[Tuple[str, str, str, str]]:
+    """
+    Extract BOM table rows (item, qty, part_number, description) from drawing text.
+    """
     text_all: List[str] = []
     with pdfplumber.open(str(pdf_path)) as pdf:
         for p in pdf.pages:
@@ -135,7 +139,7 @@ def render_clip_to_png(
     return out_path
 
 
-def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path) -> None:
+def build_docx_with_step_images(pdf_path: Path, bom_rows: List[Tuple[str, str, str, str]], out_docx: Path) -> None:
     doc = Document()
     doc.add_heading("Work Instructions - Draft", 0)
 
@@ -167,16 +171,17 @@ def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path) -> Non
     page = pdf.load_page(0)
 
     rendered_any = False
-   for idx, (title, anchor, params) in enumerate(STEP_ANCHORS, 1):
-    clip = clip_from_anchor(page, anchor, **params)
-    if clip is None:
-        continue
+    for idx, (title, anchor, params) in enumerate(STEP_ANCHORS, 1):
+        clip = clip_from_anchor(page, anchor, **params)
+        if clip is None:
+            continue
 
-    img_path = TMP_DIR / f"step_{idx}.png"
-    render_clip_to_png(pdf_path, 0, clip, img_path, zoom=2)
+        img_path = TMP_DIR / f"step_{idx}.png"
+        render_clip_to_png(pdf_path, 0, clip, img_path, zoom=2)
 
-    doc.add_heading(title, level=2)
-    doc.add_picture(str(img_path), width=Inches(6.5))
+        doc.add_heading(title, level=2)
+        doc.add_picture(str(img_path), width=Inches(6.5))
+        rendered_any = True
 
     pdf.close()
 
@@ -184,7 +189,7 @@ def build_docx_with_step_images(pdf_path: Path, bom_rows, out_docx: Path) -> Non
         doc.add_paragraph("No anchors found to crop images. PDF may be scanned (no selectable text).")
 
     doc.add_heading("Steps (summary)", level=1)
-    for i, (title, _) in enumerate(STEP_ANCHORS, 1):
+    for i, (title, _anchor, _params) in enumerate(STEP_ANCHORS, 1):
         doc.add_paragraph(f"{i}. {title}")
 
     doc.save(str(out_docx))
@@ -214,7 +219,11 @@ async def process_pdf(
 
     return JSONResponse(
         {
-            "received": {"filename": file.filename, "bytes": len(pdf_bytes), "detail_level": detail_level},
+            "received": {
+                "filename": file.filename,
+                "bytes": len(pdf_bytes),
+                "detail_level": detail_level,
+            },
             "docx_url": docx_url,
         }
     )
