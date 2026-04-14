@@ -15,11 +15,31 @@ from docx.shared import Inches
 TMP_DIR = Path("/tmp")
 
 STEP_ANCHORS = [
-    ("Step 1 - Kapton position (View A)", "Fix the kapton in this position before assembly"),
-    ("Step 2 - Before assembly: fill gel XTS-8030", "Before assembly: Fill volume"),
-    ("Step 3 - Filling opening", "Openning for filling"),
-    ("Step 4 - After assembly: fill gel XTS-8030", "After that MINID will be assembled"),
-    ("Step 5 - Upper label area", "Area for label"),
+    (
+        "Step 1 - Kapton position (View A)",
+        "Fix the kapton in this position before assembly",
+        {"clip_above": 260, "clip_below": 140, "left_pad": 420, "right_pad": 120},
+    ),
+    (
+        "Step 2 - Before assembly: fill gel XTS-8030",
+        "Before assembly: Fill volume",
+        {"clip_above": 240, "clip_below": 140, "left_pad": 80, "right_pad": 420},
+    ),
+    (
+        "Step 3 - Filling opening",
+        "Openning for filling",
+        {"clip_above": 200, "clip_below": 140, "left_pad": 120, "right_pad": 500},
+    ),
+    (
+        "Step 4 - After assembly: fill gel XTS-8030",
+        "After that MINID will be assembled",
+        {"clip_above": 230, "clip_below": 160, "left_pad": 80, "right_pad": 520},
+    ),
+    (
+        "Step 5 - Upper label area",
+        "Area for label",
+        {"clip_above": 200, "clip_below": 140, "left_pad": 120, "right_pad": 520},
+    ),
 ]
 
 app = FastAPI(title="WI from PDF API (Step Images + BOM)")
